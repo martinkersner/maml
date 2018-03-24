@@ -38,7 +38,6 @@ class Trainer():
         self.test_print_interval = 5000
 
         self.session = tf.InteractiveSession()
-        self.train_writer = SummaryFileWriter(self.logdir / self.exp_string, self.session.graph)
 
         self.num_classes = self.data_generator.num_classes  # for classification, 1 otherwise
 
@@ -61,7 +60,7 @@ class Trainer():
         else:
             dim_input = self.data_generator.dim_input
 
-        dim_output = 1
+        dim_output = 1  # for sinusoid
 
         self.model = MAML(dim_input, dim_output, test_num_updates=test_num_updates)
         self.model.construct_model(input_tensors=None, prefix='metatrain_')
@@ -69,6 +68,8 @@ class Trainer():
 
         tf.global_variables_initializer().run()
         self.saver = TrainSaver(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES))
+        self.train_writer = SummaryFileWriter(self.logdir / self.exp_string,
+                                              self.session.graph)
 
     def train(self):
         logging.info("Initialization")

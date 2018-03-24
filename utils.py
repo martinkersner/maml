@@ -62,9 +62,9 @@ class SummaryFileWriter(object):
     def __init__(
         self,
         fullpath: Path,
-        session: tf.Session,
+        graph,
     ):
-        self.writer = tf.summary.FileWriter(str(fullpath), session)
+        self.writer = tf.summary.FileWriter(str(fullpath), graph)
 
     def add_summary(
         self,
