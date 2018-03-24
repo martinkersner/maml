@@ -32,7 +32,7 @@ class SinusoidDataGenerator(object):
         self.dim_output = 1
 
     def generate(self, input_idx: int=None):
-        # input_idx is used during qualitative testing --the number of examples
+        # input_idx is used during qualitative testing the number of examples
         # used for the grad update
         amp = np.random.uniform(self.amp_range[0], self.amp_range[1], [self.batch_size])
         phase = np.random.uniform(self.phase_range[0], self.phase_range[1], [self.batch_size])
@@ -40,9 +40,12 @@ class SinusoidDataGenerator(object):
         init_inputs = np.zeros([self.batch_size, self.num_samples_per_class, self.dim_input])
 
         for func in range(self.batch_size):
-            init_inputs[func] = np.random.uniform(self.input_range[0], self.input_range[1], [self.num_samples_per_class, 1])
+            init_inputs[func] = np.random.uniform(
+                self.input_range[0], self.input_range[1], [self.num_samples_per_class, 1])
+
             if input_idx is not None:
                 init_inputs[:, input_idx:, 0] = np.linspace(self.input_range[0], self.input_range[1], num=self.num_samples_per_class-input_idx, retstep=False)
+
             outputs[func] = amp[func] * np.sin(init_inputs[func]-phase[func])
 
         return init_inputs, outputs, amp, phase

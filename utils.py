@@ -1,7 +1,7 @@
-""" Utility functions. """
-import numpy as np
 import os
 import random
+from pathlib import Path
+
 import tensorflow as tf
 
 from tensorflow.contrib.layers.python import layers as tf_layers
@@ -56,3 +56,35 @@ def mse(pred, label):
 def xent(pred, label):
     # Note - with tf version <=0.12, this loss has incorrect 2nd derivatives
     return tf.nn.softmax_cross_entropy_with_logits(logits=pred, labels=label) / FLAGS.update_batch_size
+
+
+class SummaryFileWriter(object):
+    def __init__(
+        self,
+        fullpath: Path,
+        session: tf.Session,
+    ):
+        self.writer = tf.summary.FileWriter(str(fullpath), session)
+
+    def add_summary(
+        self,
+        summary,
+        global_step: int=None
+    ):
+        self.writer.add_summary(summary, global_step=global_step)
+
+
+class TrainSaver(object):
+    def __init__(
+        self,
+        varlist,
+        max_to_keep: int=10
+    ):
+        self.saver = tf.train.Saver(varlist, max_to_keep=max_to_keep)
+
+    def save(
+        self,
+        session: tf.Session,
+        fullpath: Path
+    ):
+        self.saver.save(session, str(fullpath))
