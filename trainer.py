@@ -7,12 +7,14 @@ import tensorflow as tf
 from maml import MAML
 from utils import SummaryFileWriter, TrainSaver
 
+logging.basicConfig(level=logging.INFO)
 
-class Trainer():
+
+class Trainer(object):
     def __init__(
         self,
+        model,
         data_generator,
-        exp_string,  # move out
         logdir: Path,
         pretrain_iterations,
         metatrain_iterations,
@@ -20,10 +22,11 @@ class Trainer():
         update_batch_size,
         num_updates,
         baseline: str=None,
+        stop_grad: bool=False,
         is_training: bool=True,
     ):
+        self.model = model
         self.data_generator = data_generator
-        self.exp_string = exp_string
         self.logdir = logdir
         self.pretrain_iterations = pretrain_iterations
         self.metatrain_iterations = metatrain_iterations
@@ -31,143 +34,101 @@ class Trainer():
         self.update_batch_size = update_batch_size
         self.num_updates = num_updates
         self.baseline = baseline
+        self.stop_grad = stop_grad
+        self.is_training = is_training
 
-        self.summary_interval = 100
-        self.save_interval = 100
-        self.print_interval = 100
-        self.test_print_interval = 5000
+        # for classification, 1 otherwise
+        self.num_classes = self.data_generator.num_classes
+
+        self.setup()
+
+    def setup(self):
+        self.log_interval = 100
+        self.save_interval = 1000
+        self.exp_string = self._build_exp_string()
 
         self.session = tf.InteractiveSession()
-
-        self.num_classes = self.data_generator.num_classes  # for classification, 1 otherwise
-
-        self.build_model(is_training)
-
-    def build_model(self, is_training: bool):
-        if is_training:
-            test_num_updates = 5
-        else:
-            test_num_updates = 10
-            orig_meta_batch_size = self.meta_batch_size
-
-            self.meta_batch_size = 1  # always use meta batch size of 1 when testing.
-
-        if self.baseline == 'oracle':
-            assert FLAGS.datasource == 'sinusoid'
-            dim_input = 3
-            self.pretrain_iterations += self.metatrain_iterations
-            self.metatrain_iterations = 0
-        else:
-            dim_input = self.data_generator.dim_input
-
-        dim_output = 1  # for sinusoid
-
-        self.model = MAML(dim_input, dim_output, test_num_updates=test_num_updates)
-        self.model.construct_model(input_tensors=None, prefix='metatrain_')
-        self.model.summ_op = tf.summary.merge_all()
-
         tf.global_variables_initializer().run()
+
         self.saver = TrainSaver(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES))
-        self.train_writer = SummaryFileWriter(self.logdir / self.exp_string,
-                                              self.session.graph)
+        self.summary_writer = SummaryFileWriter(self.logdir / self.exp_string,
+                                                self.session.graph)
 
     def train(self):
-        logging.info("Initialization")
-        tf.train.start_queue_runners()
-
         logging.info("Training started")
-        prelosses = []
-        postlosses = []
-        multitask_weights = []
-        reg_weights = []
+        self.prelosses = []
+        self.postlosses = []
 
-        for itr in range(self.pretrain_iterations + self.metatrain_iterations):
-            batch_x, batch_y, amp, phase = self.data_generator.generate()
+        for step in range(self.pretrain_iterations + self.metatrain_iterations):
+            batch_x, batch_y, amp, phase = self.data_generator.generate()  # FIXME amp, phase
 
-            # TODO test
-            if self.baseline == 'oracle':
-                batch_x = np.concatenate(
-                    [
-                        batch_x,
-                        np.zeros([batch_x.shape[0], batch_x.shape[1], 2])
-                    ],
-                    2
-                )
-
-                for i in range(self.meta_batch_size):
-                    batch_x[i, :, 1] = amp[i]
-                    batch_x[i, :, 2] = phase[i]
-
+            # b used for testing
             feed_dict = {
-                self.model.input_a: batch_x[:, :self.num_classes*self.update_batch_size, :],
-                self.model.label_a: batch_y[:, :self.num_classes*self.update_batch_size, :],
-
-                # b used for testing
-                self.model.input_b: batch_x[:, self.num_classes*self.update_batch_size:, :],
-                self.model.label_b: batch_y[:, self.num_classes*self.update_batch_size:, :],
+                self.model.inputa: batch_x[:, :self.num_classes*self.update_batch_size, :],
+                self.model.inputb: batch_x[:, self.num_classes*self.update_batch_size:, :],
+                self.model.labela: batch_y[:, :self.num_classes*self.update_batch_size, :],
+                self.model.labelb: batch_y[:, self.num_classes*self.update_batch_size:, :],
             }
 
-            if itr < self.pretrain_iterations:
-                input_tensors = [self.model.pretrain_op]
+            if step < self.pretrain_iterations:
+                train_op = self.model.pretrain_op
             else:
-                input_tensors = [self.model.metatrain_op]
+                train_op = self.model.metatrain_op
 
-            if (itr % self.summary_interval == 0 or itr % self.print_interval == 0):
-                input_tensors.extend(
-                    [
-                        self.model.summ_op,
-                        self.model.total_loss1,
-                        self.model.total_losses2[self.num_updates-1]
-                    ])
-                # if model.classification:
-                #    input_tensors.extend([model.total_accuracy1, model.total_accuracies2[self.num_updates-1]])
+            input_tensors = [
+                train_op,
+                self.model.summ_op,
+                self.model.total_loss1,
+                self.model.total_losses2[self.num_updates-1]
+            ]
 
-            result = self.session.run(input_tensors, feed_dict)
+            _, summary, preloss, postloss = self.session.run(input_tensors, feed_dict)
+            self.prelosses.append(preloss)
+            self.postlosses.append(postloss)
 
-            if itr % self.summary_interval == 0:
-                prelosses.append(result[-2])
-                self.train_writer.add_summary(result[1], itr)
-                postlosses.append(result[-1])
+            if step != 0:
+                if step % self.log_interval == 0:
+                    self.summary_writer.add_summary(summary, global_step=step)
+                    self._log_training_info(step)
+                    self.prelosses = []
+                    self.postlosses = []
 
-            if itr != 0 and itr % self.print_interval == 0:
-                if itr < self.pretrain_iterations:
-                    print_str = 'Pretrain Iteration ' + str(itr)
-                else:
-                    print_str = 'Iteration ' + str(itr - self.pretrain_iterations)
-                print_str += ': ' + str(np.mean(prelosses)) + ', ' + str(np.mean(postlosses))
-                print(print_str)
-                prelosses, postlosses = [], []
+                if step % self.save_interval == 0:
+                    self.saver.save(self.session, self.logdir / self.exp_string / f"model{step}")
 
-            if itr != 0 and itr % self.save_interval == 0:
-                self.saver.save(self.session, self.logdir / self.exp_string / f"model{str(itr)}")
+        self.saver.save(self.session, self.logdir / self.exp_string / f"model{step}")
 
-            # sinusoid is infinite data, so no need to test on meta-validation set.
-            # if itr != 0 and itr % test_print_interval == 0 and FLAGS.datasource !='sinusoid':
-            #     if 'generate' not in dir(data_generator):
-            #         feed_dict = {}
-            #         if model.classification:
-            #             input_tensors = [model.metaval_total_accuracy1, model.metaval_total_accuracies2[self.num_updates-1], model.summ_op]
-            #         else:
-            #             input_tensors = [model.metaval_total_loss1, model.metaval_total_losses2[self.num_updates-1], model.summ_op]
-            #     else:
-            #         batch_x, batch_y, amp, phase = data_generator.generate(train=False)
-            #         input_a = batch_x[:, :num_classes*self.update_batch_size, :]
-            #         input_b = batch_x[:, num_classes*self.update_batch_size:, :]
-            #         label_a = batch_y[:, :num_classes*self.update_batch_size, :]
-            #         label_b = batch_y[:, num_classes*self.update_batch_size:, :]
-            #         feed_dict = {
-            #             model.input_a: input_a,
-            #             model.input_b: input_b,
-            #             model.label_a: label_a,
-            #             model.label_b: label_b,
-            #             model.meta_lr: 0.0
-            #         }
-            #         if model.classification:
-            #             input_tensors = [model.total_accuracy1, model.total_accuracies2[self.num_updates-1]]
-            #         else:
-            #             input_tensors = [model.total_loss1, model.total_losses2[self.num_updates-1]]
+    def _log_training_info(self, step):
+        if step < self.pretrain_iterations:
+            log_str = f"Pretrain step {step}"
+        else:
+            log_str = f"Step {step - self.pretrain_iterations}"
 
-            #     result = sess.run(input_tensors, feed_dict)
-            #     logging.info(f"Validation results: {str(result[0])}, {str(result[1]}")
+        log_str += f": {np.mean(self.prelosses)}, {np.mean(self.postlosses)}"
+        logging.info(log_str)
 
-        self.saver.save(self.session, self.logdir / self.exp_string / f"model{str(itr)}")
+    def _build_exp_string(self):
+        exp_string = "".join([
+            f"cls_{str(self.num_classes)}",
+            f".mbs_{str(self.meta_batch_size)}",
+            f".numstep_{str(self.num_updates)}"])
+
+        # if FLAGS.num_filters != 64:
+            # exp_string += f"hidden_{str(FLAGS.num_filters)}"
+        # if FLAGS.max_pool:
+            # exp_string += "maxpool"
+        if self.stop_grad:
+            exp_string += "stopgrad"
+        if self.baseline:
+            exp_string += FLAGS.baseline
+
+        # if FLAGS.norm == "batch_norm":
+            # exp_string += "batchnorm"
+        # elif FLAGS.norm == "layer_norm":
+            # exp_string += "layernorm"
+        # elif FLAGS.norm == "None":
+            # exp_string += "nonorm"
+        # else:
+            # raise ValueError("Norm setting not recognized.")
+
+        return exp_string

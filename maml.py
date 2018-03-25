@@ -22,7 +22,6 @@ class MAML(object):
         dim_output=1,
         test_num_updates=5
     ):
-        """ must call construct_model() after initializing MAML! """
         self.dim_input = dim_input
         self.dim_output = dim_output
         self.update_lr = FLAGS.update_lr
@@ -58,15 +57,15 @@ class MAML(object):
         # a: training data for inner gradient
         # b: test data for meta gradient
         if input_tensors is None:
-            self.input_a = tf.placeholder(tf.float32)  # FIXME rename
-            self.input_b = tf.placeholder(tf.float32)
-            self.label_a = tf.placeholder(tf.float32)
-            self.label_b = tf.placeholder(tf.float32)
-        else:
-            self.input_a = input_tensors['inputa']
-            self.input_b = input_tensors['inputb']
-            self.label_a = input_tensors['labela']
-            self.label_b = input_tensors['labelb']
+            self.inputa = tf.placeholder(tf.float32)  # FIXME rename
+            self.inputb = tf.placeholder(tf.float32)
+            self.labela = tf.placeholder(tf.float32)
+            self.labelb = tf.placeholder(tf.float32)
+        # else:
+            # self.inputa = input_tensors['inputa']
+            # self.inputb = input_tensors['inputb']
+            # self.labela = input_tensors['labela']
+            # self.labelb = input_tensors['labelb']
 
         with tf.variable_scope('model', reuse=None) as training_scope:
             # if 'weights' in dir(self):  # TODO correct?
@@ -90,7 +89,7 @@ class MAML(object):
 
             def task_metalearn(inp, reuse=True):
                 """ Perform gradient descent for one task in the meta-batch. """
-                input_a, input_b, label_a, label_b = inp
+                inputa, inputb, labela, labelb = inp
                 task_outputs_b = []
                 task_losses_b = []
 
@@ -98,42 +97,42 @@ class MAML(object):
                     # task_accuraciesb = []
 
                 # only reuse on the first iter
-                task_output_a = self.forward(input_a, weights, reuse=reuse)
-                task_loss_a = self.loss_func(task_output_a, label_a)
+                task_output_a = self.forward(inputa, weights, reuse=reuse)
+                task_loss_a = self.loss_func(task_output_a, labela)
 
                 grads = tf.gradients(task_loss_a, list(weights.values()))
                 if FLAGS.stop_grad:
                     grads = [tf.stop_gradient(grad) for grad in grads]
                 gradients = dict(zip(weights.keys(), grads))
                 fast_weights = dict(zip(weights.keys(), [weights[key] - self.update_lr*gradients[key] for key in weights.keys()]))
-                output = self.forward(input_b, fast_weights, reuse=True)
+                output = self.forward(inputb, fast_weights, reuse=True)
                 task_outputs_b.append(output)
-                task_losses_b.append(self.loss_func(output, label_b))
+                task_losses_b.append(self.loss_func(output, labelb))
 
                 for j in range(num_updates - 1):
-                    loss = self.loss_func(self.forward(input_a, fast_weights, reuse=True), label_a)
+                    loss = self.loss_func(self.forward(inputa, fast_weights, reuse=True), labela)
                     grads = tf.gradients(loss, list(fast_weights.values()))
                     if FLAGS.stop_grad:
                         grads = [tf.stop_gradient(grad) for grad in grads]
                     gradients = dict(zip(fast_weights.keys(), grads))
                     fast_weights = dict(zip(fast_weights.keys(), [fast_weights[key] - self.update_lr*gradients[key] for key in fast_weights.keys()]))
-                    output = self.forward(input_b, fast_weights, reuse=True)
+                    output = self.forward(inputb, fast_weights, reuse=True)
                     task_outputs_b.append(output)
-                    task_losses_b.append(self.loss_func(output, label_b))
+                    task_losses_b.append(self.loss_func(output, labelb))
 
                 task_output = [task_output_a, task_outputs_b, task_loss_a, task_losses_b]
 
                 # if self.classification:
-                    # task_accuracya = tf.contrib.metrics.accuracy(tf.argmax(tf.nn.softmax(task_output_a), 1), tf.argmax(label_a, 1))
+                    # task_accuracya = tf.contrib.metrics.accuracy(tf.argmax(tf.nn.softmax(task_output_a), 1), tf.argmax(labela, 1))
                     # for j in range(num_updates):
-                        # task_accuraciesb.append(tf.contrib.metrics.accuracy(tf.argmax(tf.nn.softmax(task_outputs_b[j]), 1), tf.argmax(label_b, 1)))
+                        # task_accuraciesb.append(tf.contrib.metrics.accuracy(tf.argmax(tf.nn.softmax(task_outputs_b[j]), 1), tf.argmax(labelb, 1)))
                     # task_output.extend([task_accuracy_a, task_accuracies_b])
 
                 return task_output
 
             if FLAGS.norm is not 'None':
                 # to initialize the batch norm vars, might want to combine this, and not run idx 0 twice.
-                unused = task_metalearn((self.input_a[0], self.input_b[0], self.label_a[0], self.label_b[0]), False)
+                unused = task_metalearn((self.inputa[0], self.inputb[0], self.labela[0], self.labelb[0]), False)
 
             out_dtype = [tf.float32, [tf.float32]*num_updates, tf.float32, [tf.float32]*num_updates]
             # if self.classification:
@@ -141,7 +140,7 @@ class MAML(object):
 
             result = tf.map_fn(
                 task_metalearn,
-                elems=(self.input_a, self.input_b, self.label_a, self.label_b),
+                elems=(self.inputa, self.inputb, self.labela, self.labelb),
                 dtype=out_dtype,
                 parallel_iterations=FLAGS.meta_batch_size
             )
