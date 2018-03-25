@@ -59,7 +59,18 @@ def main():
 
     input_tensors = None
 
-    model = MAML(dim_input, dim_output, test_num_updates=test_num_updates)
+    model = MAML(
+        stop_grad=FLAGS.stop_grad,
+        meta_lr=FLAGS.meta_lr,
+        num_updates=FLAGS.num_updates,
+        update_lr=FLAGS.update_lr,
+        dim_input=dim_input,
+        dim_output=dim_output,
+        test_num_updates=test_num_updates,
+        meta_batch_size=FLAGS.meta_batch_size,
+        metatrain_iterations=FLAGS.metatrain_iterations,
+        norm=FLAGS.norm,
+    )
     model.construct_model(input_tensors=input_tensors, prefix='metatrain_')
     model.summ_op = tf.summary.merge_all()
 
