@@ -77,9 +77,10 @@ class Trainer(object):
 
             input_tensors = [
                 train_op,
-                self.model.summ_op,
+                self.model.summary_op,
                 self.model.total_loss1,
-                self.model.total_losses2[self.num_updates-1]
+                # self.model.total_losses2[self.num_updates-1]
+                self.model.total_losses2[-1]
             ]
 
             _, summary, preloss, postloss = self.session.run(input_tensors, feed_dict)

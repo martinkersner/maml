@@ -71,8 +71,7 @@ def main():
         metatrain_iterations=FLAGS.metatrain_iterations,
         norm=FLAGS.norm,
     )
-    model.construct_model(input_tensors=input_tensors, prefix='metatrain_')
-    model.summ_op = tf.summary.merge_all()
+    model.build(input_tensors=input_tensors, prefix="metatrain")
 
     if FLAGS.train == False:
         # change to original meta batch size when loading model.
