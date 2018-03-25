@@ -32,7 +32,7 @@ class MAML(object):
         self.dims = [self.dim_input, 40, 40, self.dim_output]
         self.loss_func = mse
         self.forward = self.forward_fc
-        self.construct_weights = self.construct_fc_weights
+        self.initialize_weights = self.initialize_fc_weights
 
     def build(self, input_tensors=None, prefix='metatrain_'):
         # a: training data for inner gradient
@@ -55,58 +55,16 @@ class MAML(object):
                 # weights = self.weights
             # else:
                 # Define the weights
-            self.weights = weights = self.construct_weights()
+            self.weights = weights = self.initialize_weights()
 
-            # outputbs[i] and lossesb[i] is the output and loss after i+1 gradient updates
-            losses_a = []
-            outputs_a = []
-            losses_b = []
-            outputs_b = []
-            num_updates = max(self.test_num_updates, self.num_updates)
-            outputs_b = [[]]*num_updates
-            losses_b = [[]]*num_updates
-
-            def task_metalearn(inp, reuse: bool=True):
-                """ Perform gradient descent for one task in the meta-batch. """
-                inputa, inputb, labela, labelb = inp
-                task_outputs_b = []
-                task_losses_b = []
-
-                # only reuse on the first iter
-                task_output_a = self.forward(inputa, weights, reuse=reuse)
-                task_loss_a = self.loss_func(task_output_a, labela)
-
-                grads = tf.gradients(task_loss_a, list(weights.values()))
-
-                if self.stop_grad:
-                    grads = [tf.stop_gradient(grad) for grad in grads]
-
-                gradients = dict(zip(weights.keys(), grads))
-                fast_weights = dict(zip(weights.keys(), [weights[key] - self.update_lr*gradients[key] for key in weights.keys()]))
-                output = self.forward(inputb, fast_weights, reuse=True)
-                task_outputs_b.append(output)
-                task_losses_b.append(self.loss_func(output, labelb))
-
-                for j in range(num_updates - 1):
-                    loss = self.loss_func(self.forward(inputa, fast_weights, reuse=True), labela)
-                    grads = tf.gradients(loss, list(fast_weights.values()))
-                    if self.stop_grad:
-                        grads = [tf.stop_gradient(grad) for grad in grads]
-                    gradients = dict(zip(fast_weights.keys(), grads))
-                    fast_weights = dict(zip(fast_weights.keys(), [fast_weights[key] - self.update_lr*gradients[key] for key in fast_weights.keys()]))
-                    output = self.forward(inputb, fast_weights, reuse=True)
-                    task_outputs_b.append(output)
-                    task_losses_b.append(self.loss_func(output, labelb))
-
-                task_output = [task_output_a, task_outputs_b, task_loss_a, task_losses_b]
-
-                return task_output
+            self.num_updates_tmp = max(self.test_num_updates, self.num_updates)
+            task_metalearn = self.metalearn_wrapper()
 
             if self.norm is not "None":  # FIXME
                 # to initialize the batch norm vars, might want to combine this, and not run idx 0 twice.
-                unused = task_metalearn((self.inputa[0], self.inputb[0], self.labela[0], self.labelb[0]), False)
+                task_metalearn((self.inputa[0], self.inputb[0], self.labela[0], self.labelb[0]), False)
 
-            out_dtype = [tf.float32, [tf.float32]*num_updates, tf.float32, [tf.float32]*num_updates]
+            out_dtype = [tf.float32, [tf.float32]*self.num_updates_tmp, tf.float32, [tf.float32]*self.num_updates_tmp]
 
             outputs_a, outputs_b, losses_a, losses_b = tf.map_fn(
                 task_metalearn,
@@ -115,10 +73,9 @@ class MAML(object):
                 parallel_iterations=self.meta_batch_size
             )
 
-        # Performance & Optimization
-        if 'train' in prefix:
+        if "train" in prefix:
             self.total_loss1 = total_loss1 = tf.reduce_sum(losses_a) / tf.to_float(self.meta_batch_size)
-            self.total_losses2 = total_losses2 = [tf.reduce_sum(losses_b[j]) / tf.to_float(self.meta_batch_size) for j in range(num_updates)]
+            self.total_losses2 = total_losses2 = [tf.reduce_sum(losses_b[j]) / tf.to_float(self.meta_batch_size) for j in range(self.num_updates_tmp)]
             # after the map_fn
             # self.outputs_a, self.outputs_b = outputs_a, outputs_b
             self.pretrain_op = tf.train.AdamOptimizer(self.meta_lr, name="Adam/pretrain").minimize(total_loss1)
@@ -129,16 +86,55 @@ class MAML(object):
                 self.metatrain_op = optimizer.apply_gradients(self.gvs)
         else:  # metaval_
             self.metaval_total_loss1 = total_loss1 = tf.reduce_sum(losses_a) / tf.to_float(self.meta_batch_size)
-            self.metaval_total_losses2 = total_losses2 = [tf.reduce_sum(losses_b[j]) / tf.to_float(self.meta_batch_size) for j in range(num_updates)]
+            self.metaval_total_losses2 = total_losses2 = [tf.reduce_sum(losses_b[j]) / tf.to_float(self.meta_batch_size) for j in range(self.num_updates_tmp)]
 
         tf.summary.scalar(f"{prefix}/pre_update_loss", total_loss1)
 
-        for j in range(num_updates):
+        for j in range(self.num_updates_tmp):
             tf.summary.scalar(f"{prefix}/post_update_loss/step_{j+1}", total_losses2[j])
 
         self.summary_op = tf.summary.merge_all()
 
-    def construct_fc_weights(self):
+    def metalearn_wrapper(self):
+        """ Perform gradient descent for one task in the meta-batch. """
+        def fun(inp, reuse: bool=True):
+            with tf.variable_scope("model", reuse=True):
+                inputa, inputb, labela, labelb = inp
+
+                task_outputs_b = []
+                task_losses_b = []
+
+                fast_weights = self.weights
+
+                for i in range(self.num_updates_tmp):
+                    if i == 0:
+                        reuse_tmp = reuse
+                    else:
+                        reuse_tmp = True
+
+                    output_a = self.forward(inputa, fast_weights, reuse=reuse_tmp)
+                    loss_a = self.loss_func(output_a, labela)
+
+                    if i == 0:
+                        task_output_a = output_a
+                        task_loss_a = loss_a
+
+                    grads = tf.gradients(loss_a, list(fast_weights.values()))
+                    if self.stop_grad:
+                        grads = [tf.stop_gradient(grad) for grad in grads]
+                    gradients = dict(zip(fast_weights.keys(), grads))
+                    fast_weights = dict(zip(fast_weights.keys(), [fast_weights[key] - self.update_lr*gradients[key] for key in fast_weights.keys()]))
+
+                    output_b = self.forward(inputb, fast_weights, reuse=True)
+                    loss_b = self.loss_func(output_b, labelb)
+                    task_outputs_b.append(output_b)
+                    task_losses_b.append(loss_b)
+
+                return [task_output_a, task_outputs_b, task_loss_a, task_losses_b]
+
+        return fun
+
+    def initialize_fc_weights(self):
         weights = {}
 
         for idx in range(len(self.dims)-1):
