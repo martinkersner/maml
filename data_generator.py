@@ -24,7 +24,7 @@ class SinusoidDataGenerator(object):
         self.dim_input = 1
         self.dim_output = 1
 
-    def generate(self, input_idx: int=None):
+    def generate(self, input_idx: int=None, is_training: bool=False):
         # input_idx is used during qualitative testing the number of examples
         # used for the grad update
         amp = np.random.uniform(self.amp_range[0], self.amp_range[1], [self.batch_size])

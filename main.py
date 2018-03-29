@@ -86,12 +86,14 @@ def main():
         FLAGS.meta_batch_size,
         FLAGS.update_batch_size,
         FLAGS.num_updates,
+        FLAGS.update_lr,
         stop_grad=FLAGS.stop_grad,
         baseline=FLAGS.baseline,
         is_training=True
     )
 
     trainer.train()
+    trainer.test()
 
 
 if __name__ == "__main__":
